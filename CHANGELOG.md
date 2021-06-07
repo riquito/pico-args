@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/)
 and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
+### Added
+- `combined-flags` allows the last flag to be followed by its value
 
 ## [0.4.2] - 2021-06-03
 ### Fixed
