@@ -95,6 +95,28 @@ fn option_03() {
     assert_eq!(value.unwrap(), "test");
 }
 
+#[cfg(all(feature = "short-space-opt", feature = "combined-flags"))]
+#[test]
+fn extract_value_from_combined_flags() {
+    let mut args = Arguments::from_vec(to_vec(&["-sKvalue"]));
+    let value: Option<String> = args.opt_value_from_str("-K").unwrap();
+    assert_eq!(value.unwrap(), "value");
+    assert_eq!(args.finish(), vec![OsString::from("-s")]);
+}
+
+#[cfg(all(
+    feature = "short-space-opt",
+    feature = "eq-separator",
+    feature = "combined-flags"
+))]
+#[test]
+fn extract_value_from_combined_flags_plus_eq() {
+    let mut args = Arguments::from_vec(to_vec(&["-sK=value"]));
+    let value: Option<String> = args.opt_value_from_str("-K").unwrap();
+    assert_eq!(value.unwrap(), "value");
+    assert_eq!(args.finish(), vec![OsString::from("-s")]);
+}
+
 #[cfg(feature = "eq-separator")]
 #[test]
 fn eq_option_01() {

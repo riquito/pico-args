@@ -175,19 +175,17 @@ impl Arguments {
             #[cfg(feature = "combined-flags")]
             // Combined flags only work if the short flag is a single character
             {
-                if keys.first().len() == 2 {
-                    let short_flag = &keys.first()[1..2];
+                let short_flag = keys.first();
+                if short_flag.len() == 2 {
                     for (n, item) in self.0.iter().enumerate() {
-                        if let Some(s) = item.to_str() {
-                            if s.starts_with('-') && !s.starts_with("--") && s.contains(short_flag) {
-                                if s.len() == 2 {
-                                    // last flag
-                                    self.0.remove(n);
-                                } else {
-                                    self.0[n] = s.replacen(short_flag, "", 1).into();
-                                }
-                                return true;
+                        if let Some((s, _, k)) = get_index_combined_flag(item, short_flag) {
+                            if item == short_flag {
+                                // last flag
+                                self.0.remove(n);
+                            } else {
+                                self.0[n] = s.replacen(k, "", 1).into();
                             }
+                            return true;
                         }
                     }
                 }
@@ -272,13 +270,19 @@ impl Arguments {
         f: fn(&str) -> Result<T, E>,
     ) -> Result<Option<T>, Error> {
         match self.find_value(keys)? {
-            Some((value, kind, idx)) => {
+            Some((value, kind, idx, maybe_new_arg)) => {
                 match f(value) {
                     Ok(value) => {
                         // Remove only when all checks are passed.
-                        self.0.remove(idx);
-                        if kind == PairKind::TwoArguments {
+
+                        if let Some(new_arg) = maybe_new_arg {
+                            // e.g. -sKvalue becomes -s
+                            self.0[idx] = new_arg.into();
+                        } else {
                             self.0.remove(idx);
+                            if kind == PairKind::TwoArguments {
+                                self.0.remove(idx);
+                            }
                         }
 
                         Ok(Some(value))
@@ -298,10 +302,7 @@ impl Arguments {
     // The whole logic must be type-independent to prevent monomorphization.
     #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
     #[inline(never)]
-    fn find_value(
-        &mut self,
-        keys: Keys,
-    ) -> Result<Option<(&str, PairKind, usize)>, Error> {
+    fn find_value(&mut self, keys: Keys) -> Result<Option<(&str, PairKind, usize, Option<&str>)>, Error> {
         if let Some((idx, key)) = self.index_of(keys) {
             // Parse a `--key value` pair.
 
@@ -311,18 +312,18 @@ impl Arguments {
             };
 
             let value = os_to_str(value)?;
-            Ok(Some((value, PairKind::TwoArguments, idx)))
-        } else if let Some((idx, key)) = self.index_of2(keys) {
+            Ok(Some((value, PairKind::TwoArguments, idx, None)))
+        } else if let Some((idx, key, key_end)) = self.index_of2(keys) {
             // Parse a `--key=value` or `-Kvalue` pair.
 
-            let value = &self.0[idx];
+            let arg_plus_value = &self.0[idx];
 
             // Only UTF-8 strings are supported in this method.
-            let value = value.to_str().ok_or_else(|| Error::NonUtf8Argument)?;
+            let arg_plus_value = arg_plus_value.to_str().ok_or_else(|| Error::NonUtf8Argument)?;
 
-            let mut value_range = key.len()..value.len();
+            let mut value_range = key_end..arg_plus_value.len();
 
-            if value.as_bytes().get(value_range.start) == Some(&b'=') {
+            if arg_plus_value.as_bytes().get(value_range.start) == Some(&b'=') {
                 #[cfg(feature = "eq-separator")]
                 {
                     value_range.start += 1;
@@ -336,12 +337,12 @@ impl Arguments {
             }
 
             // Check for quoted value.
-            if let Some(c) = value.as_bytes().get(value_range.start).cloned() {
+            if let Some(c) = arg_plus_value.as_bytes().get(value_range.start).cloned() {
                 if c == b'"' || c == b'\'' {
                     value_range.start += 1;
 
                     // A closing quote must be the same as an opening one.
-                    if ends_with(&value[value_range.start..], c) {
+                    if ends_with(&arg_plus_value[value_range.start..], c) {
                         value_range.end -= 1;
                     } else {
                         return Err(Error::OptionWithoutAValue(key));
@@ -355,13 +356,26 @@ impl Arguments {
             }
 
             // Extract `value` from `--key="value"`.
-            let value = &value[value_range];
+            let value = &arg_plus_value[value_range];
 
             if value.is_empty() {
                 return Err(Error::OptionWithoutAValue(key));
             }
 
-            Ok(Some((value, PairKind::SingleArgument, idx)))
+            #[cfg(feature = "combined-flags")]
+            {
+                if key_end > key.len() {
+                    // it was a key inside combined flags, e.g. -sKvalue
+                    return Ok(Some((
+                        value,
+                        PairKind::SingleArgument,
+                        idx,
+                        Some(&arg_plus_value[..key_end - 1]),
+                    )));
+                }
+            }
+
+            Ok(Some((value, PairKind::SingleArgument, idx, None)))
         } else {
             Ok(None)
         }
@@ -370,10 +384,7 @@ impl Arguments {
     // The whole logic must be type-independent to prevent monomorphization.
     #[cfg(not(any(feature = "eq-separator", feature = "short-space-opt")))]
     #[inline(never)]
-    fn find_value(
-        &mut self,
-        keys: Keys,
-    ) -> Result<Option<(&str, PairKind, usize)>, Error> {
+    fn find_value(&mut self, keys: Keys) -> Result<Option<(&str, PairKind, usize, Option<&str>)>, Error> {
         if let Some((idx, key)) = self.index_of(keys) {
             // Parse a `--key value` pair.
 
@@ -383,7 +394,7 @@ impl Arguments {
             };
 
             let value = os_to_str(value)?;
-            Ok(Some((value, PairKind::TwoArguments, idx)))
+            Ok(Some((value, PairKind::TwoArguments, idx, None)))
         } else {
             Ok(None)
         }
@@ -547,20 +558,41 @@ impl Arguments {
         None
     }
 
-    #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
+    // Check if one of `Keys` is present in the arguments and has a value
+    // directly following it (not spaced, separated at most by `=`).
+    // Matches things like `--key=value` or `-Kvalue` pair (or -xKvalue
+    // if feature combined-flags is on)
+    // Return a tuple (argument index, key, right index of key) if successful
+    #[cfg(any(
+        feature = "eq-separator",
+        feature = "short-space-opt",
+    ))]
     #[inline(never)]
-    fn index_of2(&self, keys: Keys) -> Option<(usize, &'static str)> {
+    fn index_of2(&self, keys: Keys) -> Option<(usize, &'static str, usize)> {
         // Loop unroll to save space.
-
         if !keys.first().is_empty() {
             if let Some(i) = self.0.iter().position(|v| index_predicate(v, keys.first())) {
-                return Some((i, keys.first()));
+                return Some((i, keys.first(), keys.first().len()));
+            }
+
+            #[cfg(all(feature = "combined-flags", feature = "short-space-opt"))]
+            {
+                // check if it's a short key in combined flags, presumably followed by its value
+                for (i, v) in self.0.iter().enumerate() {
+                    if let Some((_, idx_key, _)) = get_index_combined_flag(v, keys.first()) {
+                        return Some((i, keys.first(), idx_key + 1));
+                    }
+                }
             }
         }
 
         if !keys.second().is_empty() {
-            if let Some(i) = self.0.iter().position(|v| index_predicate(v, keys.second())) {
-                return Some((i, keys.second()));
+            if let Some(i) = self
+                .0
+                .iter()
+                .position(|v| index_predicate(v, keys.second()))
+            {
+                return Some((i, keys.second(), keys.second().len()));
             }
         }
 
@@ -737,6 +769,26 @@ fn index_predicate(text: &OsStr, prefix: &str) -> bool {
 #[inline]
 fn index_predicate(text: &OsStr, prefix: &str) -> bool {
     starts_with_short_prefix(text, prefix)
+}
+
+// Search for a short key in an argument item (`text`).
+// `text` is supposed to represent combined flags (one or more).
+// e.g.
+// assert!(get_index_combined_flag("-abc", "-b"), Some("-abc", 2, 'b'))
+#[cfg(feature = "combined-flags")]
+#[inline(never)]
+fn get_index_combined_flag<'a>(text: &'a OsStr, short_key: &str) -> Option<(&'a str, usize, char)> {
+    let text = os_to_str(text).ok()?;
+
+    if !text.starts_with('-') || text.starts_with("--") || short_key.len() != 2 {
+        return None
+    }
+
+    let key = short_key.chars().nth(1).unwrap();
+
+    text.char_indices()
+        .find(|(_, c)| c == &key)
+        .map(|(i, c)| (text, i, c))
 }
 
 #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
