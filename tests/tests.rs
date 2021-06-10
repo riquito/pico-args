@@ -40,6 +40,7 @@ fn contains_two_02() {
 fn contains_two_03() {
     let mut args = Arguments::from_vec(to_vec(&["-v", "--version"]));
     assert!(args.contains(["-v", "--version"]));
+    assert_eq!(args.finish(), vec!["--version"]);
 }
 
 #[test]
@@ -231,6 +232,14 @@ fn combined_flags_repeated_02() {
     let mut args = Arguments::from_vec(to_vec(&["-aaa", "-a"]));
     assert!(args.contains("-aaa"));
     assert!(args.contains("-a"));
+}
+
+#[cfg(feature = "combined-flags")]
+#[test]
+fn combined_flags_repeated_03() {
+    let mut args = Arguments::from_vec(to_vec(&["-aa"]));
+    assert!(!args.contains("-aaa"));
+    assert!(args.contains("-aa"));
 }
 
 #[cfg(feature = "combined-flags")]
