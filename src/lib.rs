@@ -32,9 +32,224 @@ If you think that this library doesn't support some feature, it's probably inten
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+use std::borrow::Cow;
+use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Display};
 use std::str::FromStr;
+
+#[derive(PartialEq, Copy, Clone, Debug)]
+enum Prefix {
+    SingleDash,
+    DoubleDash,
+}
+
+#[derive(Clone, Debug)]
+struct Arg<'a> {
+    prefix: Prefix,
+    name: &'a str,
+    eq: Option<bool>,
+    quotes: Option<char>,
+    value: Option<&'a str>,
+    #[cfg(feature = "combined-flags")]
+    combined: bool,
+}
+
+#[derive(Clone, Debug)]
+struct KeyQuery<'a> {
+    prefix: Prefix,
+    query: &'a str,
+}
+
+impl<'a> KeyQuery<'a> {
+    fn new_short(query: &'a str) -> Self {
+        Self {
+            prefix: Prefix::SingleDash,
+            query,
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a str> for KeyQuery<'a> {
+    type Error = Error;
+
+    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+        if s.starts_with("--") && s.len() > 2 {
+            Ok(KeyQuery {
+                prefix: Prefix::DoubleDash,
+                query: &s[2..],
+            })
+        } else if s.starts_with('-') && s.len() == 2 {
+            Ok(KeyQuery {
+                prefix: Prefix::SingleDash,
+                query: &s[1..],
+            })
+        } else {
+            #[cfg(feature = "combined-flags")]
+            {
+                // XXX Check must be the same character repeated
+                // or `consume` will fail in weird ways
+                if s.starts_with('-') && s.len() > 2 {
+                    return Ok(KeyQuery {
+                        prefix: Prefix::SingleDash,
+                        query: &s[1..],
+                    });
+                }
+            }
+
+            Err(Error::Utf8ArgumentParsingFailed {
+                value: s.to_owned(),
+                cause: "wrong format".to_owned(),
+            })
+        }
+    }
+}
+
+impl<'a> Arg<'a> {
+    fn new(s: &'a str) -> Result<Option<Self>, Error> {
+        // TODO should be implement as From str
+
+        if !s.starts_with('-') {
+            return Ok(None);
+        }
+        // Starts by parsing it as flag, overwrite later if necessary
+        let mut prefix = Prefix::SingleDash;
+        let mut start_name_idx = 1;
+
+        if s.starts_with("--") {
+            prefix = Prefix::DoubleDash;
+            start_name_idx = 2;
+        }
+
+        let mut eq = None;
+        let quotes = None;
+        let mut value = None;
+        let mut name = &s[start_name_idx..];
+
+        #[cfg(feature = "eq-separator")]
+        {
+            if let Some(eq_idx) = s.find('=') {
+                name = &s[start_name_idx..eq_idx];
+                eq = Some(true);
+                // worst case, it's the end of the string, it won't panic
+                let value_as_str = &s[eq_idx + 1..];
+                value = Some(value_as_str);
+
+                // Check for quoted value.
+                if let Some(c) = value_as_str.get(..1) {
+                    if c == "\"" || c == "'" {
+                        // A closing quote must be the same as an opening one.
+                        if value_as_str.len() > 1 && value_as_str.ends_with(c) {
+                            value = Some(&value_as_str[1..value_as_str.len() - 1]);
+                        } else {
+                            value = Some("");
+                        }
+                    }
+                }
+
+                if value == Some("") {
+                    value = None;
+                }
+            }
+        }
+
+        #[cfg(feature = "combined-flags")]
+        let combined = prefix == Prefix::SingleDash && name.len() > 1;
+
+        Ok(Some(Arg {
+            prefix,
+            name,
+            eq,
+            quotes,
+            value,
+            #[cfg(feature = "combined-flags")]
+            combined,
+        }))
+    }
+
+    fn contains(&self, k: &KeyQuery) -> bool {
+        // KeyQuery is guaranteed to be either --long-query or -s (short)
+        // It's up to the caller to split a combined-flags query into
+        // multiple calls to this method (e.g. -vvv as query is not allowed)
+
+        match (self.prefix, k.prefix) {
+            (Prefix::DoubleDash, Prefix::DoubleDash) => self.name == k.query,
+            #[cfg(not(feature = "combined-flags"))]
+            (Prefix::SingleDash, Prefix::SingleDash) => self.name == k.query,
+            #[cfg(feature = "combined-flags")]
+            (Prefix::SingleDash, Prefix::SingleDash) => {
+                if self.combined {
+                    self.name.contains(k.query)
+                } else {
+                    self.name == k.query
+                }
+            }
+            _ => false,
+        }
+    }
+}
+
+impl<'a> Display for Arg<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut quote = "";
+        let quote_as_char: [u8; 1];
+        if let Some(q) = self.quotes {
+            // we decoded it from utf8 and it represents a single char, ascii
+            quote_as_char = [q as u8];
+            quote = std::str::from_utf8(&quote_as_char).unwrap();
+        }
+
+        write!(
+            f,
+            "{}{}{}{}{}{}",
+            match self.prefix {
+                Prefix::SingleDash => "-",
+                Prefix::DoubleDash => "--",
+            },
+            self.name,
+            if self.eq.is_none() { "" } else { "=" },
+            quote,
+            if let Some(v) = self.value { v } else { "" },
+            quote,
+        )
+    }
+}
+
+#[cfg(feature = "combined-flags")]
+fn consume<'a, 'b>(
+    arg: &'a Arg<'a>,
+    k: &'b KeyQuery<'b>,
+) -> (Option<Cow<'a, str>>, Option<Cow<'b, KeyQuery<'b>>>) {
+    if arg.prefix == Prefix::SingleDash && k.prefix == Prefix::SingleDash {
+        // Combined flags. `k` could be "-vvv" and we have to create
+        // a new Arg without the removed occurrences.
+
+        let k_char = k.query.chars().next().unwrap();
+        let k_len = k.query.len();
+        let n = arg.name.matches(k_char).count();
+        let arg_fully_consumed = n == arg.name.len() && n <= k_len;
+        let query_fully_consumed = k_len <= n;
+
+        return match (arg_fully_consumed, query_fully_consumed) {
+            (true, true) => (None, None),
+            (false, false) => (
+                Some(Cow::Owned(arg.name.replacen(k_char, "", k_len))),
+                Some(Cow::Owned(KeyQuery::new_short(&k.query[..k_len - n]))),
+            ),
+            (true, false) => (
+                None,
+                Some(Cow::Owned(KeyQuery::new_short(&k.query[..k_len - n]))),
+            ),
+            (false, true) => (Some(Cow::Owned(arg.name.replacen(k_char, "", k_len))), None),
+        };
+    }
+
+    if arg.contains(k) {
+        (None, None)
+    } else {
+        (Some(Cow::Borrowed(arg.name)), Some(Cow::Borrowed(k)))
+    }
+}
 
 /// A list of possible errors.
 #[derive(Clone, Debug)]
@@ -163,43 +378,79 @@ impl Arguments {
     /// return `true`, and subsequent calls will return `false`.
     ///
     /// When the "combined-flags" feature is used, repeated letters count
-    /// as repeated flags: `-vvv` is treated the same as `-v -v -v`.
+    /// as repeated flags: `-vvv` is treated the same as `-v -v -v`, but
+    /// it's consumed only if it matches as many times as the repetitions.
+    ///
+    /// This method should be called after having already consumed arguments
+    /// with values (optional or not), otherwise you risk to count values
+    /// as flags (e.g. --with-value=-x or --with-value -x would incorrectly
+    /// match when using `contains("-x")`, and be consumed in the process).
     pub fn contains<A: Into<Keys>>(&mut self, keys: A) -> bool {
         self.contains_impl(&keys.into())
     }
 
     #[inline(never)]
     fn contains_impl(&mut self, keys: &Keys) -> bool {
-        if let Some((idx, _)) = self.index_of(keys) {
-            self.0.remove(idx);
-            true
-        } else {
-            // Combined flags only work if the short flag is a single character
-            {
-                match keys.first() {
-                    Query::Short(_, short_flag) | Query::CombinedFlags(_, short_flag) => {
-                        for (n, item) in self.0.iter().enumerate() {
-                            if let Some(s) = item.to_str() {
-                                if s.starts_with('-')
-                                    && !s.starts_with("--")
-                                    && s.contains(short_flag.to_owned())
-                                {
-                                    if s.len() == 2 {
-                                        // last flag
-                                        self.0.remove(n);
+        // for each user's provided key to match
+        for k in keys.0.iter() {
+            // XXX TODO pre-provide KeyQuery items
+            if *k == Query::Empty {
+                continue;
+            }
+            let k = KeyQuery::try_from(k.to_str()).unwrap();
+
+            #[cfg(feature = "combined-flags")]
+            let mut to_swap = Vec::new();
+
+            // for each parameter provided (e.g. [--width=10, -v, --quiet])
+            for (idx, param_ostr) in self.0.iter().enumerate() {
+                // if we can decode it as a proper string
+                if let Some(param) = param_ostr.to_str() {
+                    // if it looks like an argument (some variation of "starts with -")
+                    if let Ok(Some(arg)) = Arg::new(param) {
+                        #[cfg(not(feature = "combined-flags"))]
+                        if arg.contains(&k) {
+                            self.0.remove(idx);
+                            return true;
+                        }
+
+                        #[cfg(feature = "combined-flags")]
+                        if arg.contains(&k) {
+                            // consume as much `k` as possible from `arg`
+                            let (maybe_new_name, maybe_new_k) = consume(&arg, &k);
+
+                            if let Some(new_name) = maybe_new_name {
+                                to_swap.push((idx, Some(new_name.into_owned())));
+                            } else {
+                                to_swap.push((idx, None));
+                            }
+
+                            if maybe_new_k.is_none() {
+                                // We fully consumed the query (e.g. -k or -vvv)
+                                // and we can apply the consumption
+
+                                for (swap_idx, maybe_new_name) in to_swap.into_iter().rev() {
+                                    if let Some(new_name) = maybe_new_name {
+                                        let mut new_arg =
+                                            Arg::new(self.0[swap_idx].to_str().unwrap())
+                                                .unwrap()
+                                                .unwrap();
+                                        new_arg.name = &new_name;
+                                        self.0[swap_idx] = OsString::from(new_arg.to_string());
                                     } else {
-                                        self.0[n] = s.replacen(short_flag.to_owned(), "", 1).into();
+                                        self.0.remove(swap_idx);
                                     }
-                                    return true;
                                 }
+
+                                return true;
                             }
                         }
                     }
-                    _ => (),
                 }
             }
-            false
         }
+
+        false
     }
 
     /// Parses a key-value pair using `FromStr` trait.
@@ -714,7 +965,7 @@ fn starts_with_plus_eq(text: &OsStr, q: &Query) -> bool {
 #[inline(never)]
 fn starts_with_short_prefix(text: &OsStr, prefix: &Query) -> bool {
     match prefix {
-        Query::Long(x) => false,
+        Query::Long(_) => false,
         _ => {
             if let Some(s) = text.to_str() {
                 return s.starts_with(prefix.to_str());
@@ -755,14 +1006,6 @@ fn os_to_str(text: &OsStr) -> Result<&str, Error> {
     text.to_str().ok_or_else(|| Error::NonUtf8Argument)
 }
 
-#[derive(PartialEq, Debug)]
-enum Arg {
-    Short(&'static OsStr),
-    Long(&'static OsStr),
-    #[cfg(feature = "combined-flags")]
-    CombinedFlags(&'static OsStr),
-}
-
 #[derive(PartialEq, Clone, Debug)]
 enum Query {
     Short(&'static str, char),
@@ -798,8 +1041,7 @@ impl Display for Query {
             Query::Empty => "",
             #[cfg(feature = "combined-flags")]
             Query::CombinedFlags(x, _) => x,
-        });
-        Ok(())
+        })
     }
 }
 
@@ -860,6 +1102,12 @@ impl From<&'static str> for Keys {
         if !v.starts_with("--") {
             validate_shortflag(v);
         }
-        Keys([Query::Long(&v), Query::Empty])
+
+        let k = if v.starts_with("--") {
+            Query::Long(&v)
+        } else {
+            Query::Short(&v, v.chars().next().unwrap())
+        };
+        Keys([k, Query::Empty])
     }
 }
