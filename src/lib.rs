@@ -56,13 +56,13 @@ struct Arg<'a> {
 }
 
 #[derive(Clone, Debug)]
-struct KeyQuery<'a> {
+struct KeyQuery {
     prefix: Prefix,
-    query: &'a str,
+    query: &'static str,
 }
 
-impl<'a> KeyQuery<'a> {
-    fn new_short(query: &'a str) -> Self {
+impl KeyQuery {
+    fn new_short(query: &'static str) -> Self {
         Self {
             prefix: Prefix::SingleDash,
             query,
@@ -70,10 +70,10 @@ impl<'a> KeyQuery<'a> {
     }
 }
 
-impl<'a> TryFrom<&'a str> for KeyQuery<'a> {
+impl TryFrom<&'static str> for KeyQuery {
     type Error = Error;
 
-    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+    fn try_from(s: &'static str) -> Result<Self, Self::Error> {
         if s.starts_with("--") && s.len() > 2 {
             Ok(KeyQuery {
                 prefix: Prefix::DoubleDash,
@@ -218,8 +218,8 @@ impl<'a> Display for Arg<'a> {
 #[cfg(feature = "combined-flags")]
 fn consume<'a, 'b>(
     arg: &'a Arg<'a>,
-    k: &'b KeyQuery<'b>,
-) -> (Option<Cow<'a, str>>, Option<Cow<'b, KeyQuery<'b>>>) {
+    k: &'b KeyQuery,
+) -> (Option<Cow<'a, str>>, Option<Cow<'b, KeyQuery>>) {
     if arg.prefix == Prefix::SingleDash && k.prefix == Prefix::SingleDash {
         // Combined flags. `k` could be "-vvv" and we have to create
         // a new Arg without the removed occurrences.
