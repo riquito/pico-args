@@ -288,9 +288,13 @@ impl Display for Error {
             }
             Error::MissingOption(keys) => {
                 if let (Some(first_key), Some(second_key)) = (keys.first(), keys.second()) {
-                    write!(f, "the '{}/{}' option must be set", first_key, second_key)
+                    write!(
+                        f,
+                        "the '{}/{}' option must be set",
+                        first_key.repr, second_key.repr
+                    )
                 } else if let (Some(first_key), None) = (keys.first(), keys.second()) {
-                    write!(f, "the '{}' option must be set", first_key)
+                    write!(f, "the '{}' option must be set", first_key.repr)
                 } else {
                     // XXX this should have been catched on key creation
                     write!(f, "missing options to serch for")
@@ -393,11 +397,10 @@ impl Arguments {
     fn contains_impl(&mut self, keys: &Keys) -> bool {
         // for each user's provided key to match
         for k in keys.0.iter() {
-            // XXX TODO pre-provide KeyQuery items
             if k.is_none() {
                 continue;
             }
-            let k = KeyQuery::try_from(k.as_ref().unwrap().to_str()).unwrap();
+            let k = k.as_ref().unwrap();
 
             #[cfg(feature = "combined-flags")]
             let mut to_swap = Vec::new();
@@ -787,8 +790,8 @@ impl Arguments {
 
         for maybe_key in &keys.0 {
             if let Some(key) = maybe_key {
-                if let Some(i) = self.0.iter().position(|v| v == key.to_str()) {
-                    return Some((i, key.to_str()));
+                if let Some(i) = self.0.iter().position(|v| v == key.repr) {
+                    return Some((i, key.repr));
                 }
             }
         }
@@ -803,13 +806,13 @@ impl Arguments {
 
         if let Some(first_key) = keys.first() {
             if let Some(i) = self.0.iter().position(|v| index_predicate(v, first_key)) {
-                return Some((i, first_key.to_str()));
+                return Some((i, first_key.repr));
             }
         }
 
         if let Some(second_key) = keys.second() {
             if let Some(i) = self.0.iter().position(|v| index_predicate(v, second_key)) {
-                return Some((i, second_key.to_str()));
+                return Some((i, second_key.repr));
             }
         }
 
@@ -944,46 +947,41 @@ fn error_to_string<E: Display>(e: E) -> String {
 
 #[cfg(feature = "eq-separator")]
 #[inline(never)]
-fn starts_with_plus_eq(text: &OsStr, q: &Query) -> bool {
+fn starts_with_plus_eq(text: &OsStr, k: &KeyQuery) -> bool {
     if let Some(s) = text.to_str() {
-        let prefix = q.to_str();
-        if s.get(0..prefix.len()) == Some(prefix) {
-            if s.as_bytes().get(prefix.len()) == Some(&b'=') {
-                return true;
-            }
-        }
+        s.starts_with(k.repr) && s.get(k.repr.len()..k.repr.len() + 1) == Some("=")
+    } else {
+        false
     }
-
-    false
 }
 
 #[cfg(feature = "short-space-opt")]
 #[inline(never)]
-fn starts_with_short_prefix(text: &OsStr, prefix: &Query) -> bool {
-    match prefix {
-        Query::Long(_) => false,
-        _ => {
+fn starts_with_short_prefix(text: &OsStr, k: &KeyQuery) -> bool {
+    match k.prefix {
+        Prefix::SingleDash => {
             if let Some(s) = text.to_str() {
-                return s.starts_with(prefix.to_str());
+                return s.starts_with(k.repr);
             }
             false
         }
+        _ => false,
     }
 }
 
 #[cfg(all(feature = "eq-separator", feature = "short-space-opt"))]
 #[inline]
-fn index_predicate(text: &OsStr, prefix: &Query) -> bool {
+fn index_predicate(text: &OsStr, prefix: &KeyQuery) -> bool {
     starts_with_plus_eq(text, prefix) || starts_with_short_prefix(text, prefix)
 }
 #[cfg(all(feature = "eq-separator", not(feature = "short-space-opt")))]
 #[inline]
-fn index_predicate(text: &OsStr, prefix: &Query) -> bool {
+fn index_predicate(text: &OsStr, prefix: &KeyQuery) -> bool {
     starts_with_plus_eq(text, prefix)
 }
 #[cfg(all(feature = "short-space-opt", not(feature = "eq-separator")))]
 #[inline]
-fn index_predicate(text: &OsStr, prefix: &Query) -> bool {
+fn index_predicate(text: &OsStr, prefix: &KeyQuery) -> bool {
     starts_with_short_prefix(text, prefix)
 }
 
@@ -1002,60 +1000,21 @@ fn os_to_str(text: &OsStr) -> Result<&str, Error> {
     text.to_str().ok_or_else(|| Error::NonUtf8Argument)
 }
 
-#[derive(PartialEq, Clone, Debug)]
-enum Query {
-    Short(&'static str, char),
-    Long(&'static str),
-    Empty,
-    #[cfg(feature = "combined-flags")]
-    CombinedFlags(&'static str, Vec<char>),
-}
-
-impl Query {
-    fn to_str(&self) -> &'static str {
-        match *self {
-            Query::Empty => "",
-            Query::Short(x, _) => x,
-            Query::Long(x) => x,
-            #[cfg(feature = "combined-flags")]
-            Query::CombinedFlags(x, _) => x,
-        }
-    }
-}
-
-impl PartialEq<str> for Query {
-    fn eq(&self, other: &str) -> bool {
-        other == self.to_str()
-    }
-}
-
-impl Display for Query {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(match self {
-            Query::Short(x, _) => x,
-            Query::Long(x) => x,
-            Query::Empty => "",
-            #[cfg(feature = "combined-flags")]
-            Query::CombinedFlags(x, _) => x,
-        })
-    }
-}
-
 /// A keys container.
 ///
 /// Should not be used directly.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
-pub struct Keys([Option<Query>; 2]);
+pub struct Keys([Option<KeyQuery>; 2]);
 
 impl Keys {
     #[inline]
-    fn first(&self) -> Option<&Query> {
+    fn first(&self) -> Option<&KeyQuery> {
         self.0[0].as_ref()
     }
 
     #[inline]
-    fn second(&self) -> Option<&Query> {
+    fn second(&self) -> Option<&KeyQuery> {
         self.0[1].as_ref()
     }
 }
@@ -1071,13 +1030,10 @@ impl From<[&'static str; 2]> for Keys {
         );
         debug_assert!(v[1].starts_with("--"), "the second argument should be long");
 
-        #[cfg(feature = "combined-flags")]
-        let first = Query::CombinedFlags(v[0], v[0].chars().collect());
-
-        #[cfg(not(feature = "combined-flags"))]
-        let first = Query::Short(v[0], v[0].chars().nth(1).unwrap());
-
-        Keys([Some(first), Some(Query::Long(&v[1]))])
+        // We're handling static strings, it's ok to panic if the format is wrong
+        let first = KeyQuery::try_from(v[0]).unwrap();
+        let second = KeyQuery::try_from(v[1]).unwrap();
+        Keys([Some(first), Some(second)])
     }
 }
 
@@ -1099,11 +1055,6 @@ impl From<&'static str> for Keys {
             validate_shortflag(v);
         }
 
-        let k = if v.starts_with("--") {
-            Query::Long(&v)
-        } else {
-            Query::Short(&v, v.chars().next().unwrap())
-        };
-        Keys([Some(k), None])
+        Keys([KeyQuery::try_from(v).ok(), None])
     }
 }
