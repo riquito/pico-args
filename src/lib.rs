@@ -103,13 +103,23 @@ impl TryFrom<&'static str> for KeyQuery {
     }
 }
 
-impl<'a> Arg<'a> {
-    fn new(s: &'a str) -> Result<Option<Self>, Error> {
-        // TODO should be implement as From str
+impl<'a> TryFrom<&'a OsString> for Arg<'a> {
+    type Error = Error;
 
+    fn try_from(s: &'a OsString) -> Result<Self, Self::Error> {
+        let s = os_to_str(s)?;
+        Arg::try_from(s)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for Arg<'a> {
+    type Error = Error;
+
+    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
         if !s.starts_with('-') {
-            return Ok(None);
+            return Err(Error::NotAnOption);
         }
+
         // Starts by parsing it as flag, overwrite later if necessary
         let mut prefix = Prefix::SingleDash;
         let mut start_name_idx = 1;
@@ -154,7 +164,7 @@ impl<'a> Arg<'a> {
         #[cfg(feature = "combined-flags")]
         let combined = prefix == Prefix::SingleDash && name.len() > 1;
 
-        Ok(Some(Arg {
+        Ok(Arg {
             prefix,
             name,
             eq,
@@ -162,9 +172,11 @@ impl<'a> Arg<'a> {
             value,
             #[cfg(feature = "combined-flags")]
             combined,
-        }))
+        })
     }
+}
 
+impl<'a> Arg<'a> {
     fn contains(&self, k: &KeyQuery) -> bool {
         // KeyQuery is guaranteed to be either --long-query or -s (short)
         // It's up to the caller to split a combined-flags query into
@@ -275,6 +287,9 @@ pub enum Error {
     /// Failed to parse a raw free-standing argument.
     #[allow(missing_docs)]
     ArgumentParsingFailed { cause: String },
+
+    /// Not an option.
+    NotAnOption,
 }
 
 impl Display for Error {
@@ -308,6 +323,9 @@ impl Display for Error {
             }
             Error::ArgumentParsingFailed { cause } => {
                 write!(f, "failed to parse a binary argument cause {}", cause)
+            }
+            Error::NotAnOption => {
+                write!(f, "attempted to parse an argument as if it was an option")
             }
         }
     }
@@ -407,46 +425,41 @@ impl Arguments {
 
             // for each parameter provided (e.g. [--width=10, -v, --quiet])
             for (idx, param_ostr) in self.0.iter().enumerate() {
-                // if we can decode it as a proper string
-                if let Some(param) = param_ostr.to_str() {
-                    // if it looks like an argument (some variation of "starts with -")
-                    if let Ok(Some(arg)) = Arg::new(param) {
-                        #[cfg(not(feature = "combined-flags"))]
-                        if arg.contains(&k) {
-                            self.0.remove(idx);
-                            return true;
+                // if we can parse it
+                if let Ok(arg) = Arg::try_from(param_ostr) {
+                    #[cfg(not(feature = "combined-flags"))]
+                    if arg.contains(&k) {
+                        self.0.remove(idx);
+                        return true;
+                    }
+
+                    #[cfg(feature = "combined-flags")]
+                    if arg.contains(&k) {
+                        // consume as much `k` as possible from `arg`
+                        let (maybe_new_name, maybe_new_k) = consume(&arg, &k);
+
+                        if let Some(new_name) = maybe_new_name {
+                            to_swap.push((idx, Some(new_name.into_owned())));
+                        } else {
+                            to_swap.push((idx, None));
                         }
 
-                        #[cfg(feature = "combined-flags")]
-                        if arg.contains(&k) {
-                            // consume as much `k` as possible from `arg`
-                            let (maybe_new_name, maybe_new_k) = consume(&arg, &k);
+                        if maybe_new_k.is_none() {
+                            // We fully consumed the query (e.g. -k or -vvv)
+                            // and we can apply the consumption
 
-                            if let Some(new_name) = maybe_new_name {
-                                to_swap.push((idx, Some(new_name.into_owned())));
-                            } else {
-                                to_swap.push((idx, None));
-                            }
-
-                            if maybe_new_k.is_none() {
-                                // We fully consumed the query (e.g. -k or -vvv)
-                                // and we can apply the consumption
-
-                                for (swap_idx, maybe_new_name) in to_swap.into_iter().rev() {
-                                    if let Some(new_name) = maybe_new_name {
-                                        let mut new_arg =
-                                            Arg::new(self.0[swap_idx].to_str().unwrap())
-                                                .unwrap()
-                                                .unwrap();
-                                        new_arg.name = &new_name;
-                                        self.0[swap_idx] = OsString::from(new_arg.to_string());
-                                    } else {
-                                        self.0.remove(swap_idx);
-                                    }
+                            for (swap_idx, maybe_new_name) in to_swap.into_iter().rev() {
+                                if let Some(new_name) = maybe_new_name {
+                                    let mut new_arg =
+                                        Arg::try_from(self.0[swap_idx].to_str().unwrap()).unwrap();
+                                    new_arg.name = &new_name;
+                                    self.0[swap_idx] = OsString::from(new_arg.to_string());
+                                } else {
+                                    self.0.remove(swap_idx);
                                 }
-
-                                return true;
                             }
+
+                            return true;
                         }
                     }
                 }
