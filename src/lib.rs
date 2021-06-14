@@ -57,17 +57,12 @@ struct Arg<'a> {
 
 #[derive(Clone, Debug)]
 struct KeyQuery {
+    // represent `-` or `--`
     prefix: Prefix,
+    // the part right of the prefix
     query: &'static str,
-}
-
-impl KeyQuery {
-    fn new_short(query: &'static str) -> Self {
-        Self {
-            prefix: Prefix::SingleDash,
-            query,
-        }
-    }
+    // the full string
+    repr: &'static str,
 }
 
 impl TryFrom<&'static str> for KeyQuery {
@@ -78,11 +73,13 @@ impl TryFrom<&'static str> for KeyQuery {
             Ok(KeyQuery {
                 prefix: Prefix::DoubleDash,
                 query: &s[2..],
+                repr: &s,
             })
         } else if s.starts_with('-') && s.len() == 2 {
             Ok(KeyQuery {
                 prefix: Prefix::SingleDash,
                 query: &s[1..],
+                repr: &s,
             })
         } else {
             #[cfg(feature = "combined-flags")]
@@ -93,6 +90,7 @@ impl TryFrom<&'static str> for KeyQuery {
                     return Ok(KeyQuery {
                         prefix: Prefix::SingleDash,
                         query: &s[1..],
+                        repr: &s,
                     });
                 }
             }
@@ -234,11 +232,15 @@ fn consume<'a, 'b>(
             (true, true) => (None, None),
             (false, false) => (
                 Some(Cow::Owned(arg.name.replacen(k_char, "", k_len))),
-                Some(Cow::Owned(KeyQuery::new_short(&k.query[..k_len - n]))),
+                Some(Cow::Owned(
+                    KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap(),
+                )),
             ),
             (true, false) => (
                 None,
-                Some(Cow::Owned(KeyQuery::new_short(&k.query[..k_len - n]))),
+                Some(Cow::Owned(
+                    KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap(),
+                )),
             ),
             (false, true) => (Some(Cow::Owned(arg.name.replacen(k_char, "", k_len))), None),
         };
