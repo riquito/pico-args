@@ -284,16 +284,14 @@ impl Display for Error {
             Error::MissingArgument => {
                 write!(f, "free-standing argument is missing")
             }
-            Error::MissingOption(key) => {
-                if key.second() == &Query::Empty {
-                    write!(f, "the '{}' option must be set", key.first())
+            Error::MissingOption(keys) => {
+                if let (Some(first_key), Some(second_key)) = (keys.first(), keys.second()) {
+                    write!(f, "the '{}/{}' option must be set", first_key, second_key)
+                } else if let (Some(first_key), None) = (keys.first(), keys.second()) {
+                    write!(f, "the '{}' option must be set", first_key)
                 } else {
-                    write!(
-                        f,
-                        "the '{}/{}' option must be set",
-                        key.first(),
-                        key.second()
-                    )
+                    // XXX this should have been catched on key creation
+                    write!(f, "missing options to serch for")
                 }
             }
             Error::OptionWithoutAValue(key) => {
@@ -394,10 +392,10 @@ impl Arguments {
         // for each user's provided key to match
         for k in keys.0.iter() {
             // XXX TODO pre-provide KeyQuery items
-            if *k == Query::Empty {
+            if k.is_none() {
                 continue;
             }
-            let k = KeyQuery::try_from(k.to_str()).unwrap();
+            let k = KeyQuery::try_from(k.as_ref().unwrap().to_str()).unwrap();
 
             #[cfg(feature = "combined-flags")]
             let mut to_swap = Vec::new();
@@ -785,8 +783,8 @@ impl Arguments {
         // Do not unroll loop to save space, because it creates a bigger file.
         // Which is strange, since `index_of2` actually benefits from it.
 
-        for key in &keys.0 {
-            if key != "" {
+        for maybe_key in &keys.0 {
+            if let Some(key) = maybe_key {
                 if let Some(i) = self.0.iter().position(|v| v == key.to_str()) {
                     return Some((i, key.to_str()));
                 }
@@ -801,19 +799,15 @@ impl Arguments {
     fn index_of2(&self, keys: &Keys) -> Option<(usize, &'static str)> {
         // Loop unroll to save space.
 
-        if keys.first() != "" {
-            if let Some(i) = self.0.iter().position(|v| index_predicate(v, keys.first())) {
-                return Some((i, keys.first().to_str()));
+        if let Some(first_key) = keys.first() {
+            if let Some(i) = self.0.iter().position(|v| index_predicate(v, first_key)) {
+                return Some((i, first_key.to_str()));
             }
         }
 
-        if keys.second() != "" {
-            if let Some(i) = self
-                .0
-                .iter()
-                .position(|v| index_predicate(v, keys.second()))
-            {
-                return Some((i, keys.second().to_str()));
+        if let Some(second_key) = keys.second() {
+            if let Some(i) = self.0.iter().position(|v| index_predicate(v, second_key)) {
+                return Some((i, second_key.to_str()));
             }
         }
 
@@ -1050,17 +1044,17 @@ impl Display for Query {
 /// Should not be used directly.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
-pub struct Keys([Query; 2]);
+pub struct Keys([Option<Query>; 2]);
 
 impl Keys {
     #[inline]
-    fn first(&self) -> &Query {
-        &self.0[0]
+    fn first(&self) -> Option<&Query> {
+        self.0[0].as_ref()
     }
 
     #[inline]
-    fn second(&self) -> &Query {
-        &self.0[1]
+    fn second(&self) -> Option<&Query> {
+        self.0[1].as_ref()
     }
 }
 
@@ -1081,7 +1075,7 @@ impl From<[&'static str; 2]> for Keys {
         #[cfg(not(feature = "combined-flags"))]
         let first = Query::Short(v[0], v[0].chars().nth(1).unwrap());
 
-        Keys([first, Query::Long(&v[1])])
+        Keys([Some(first), Some(Query::Long(&v[1]))])
     }
 }
 
@@ -1108,6 +1102,6 @@ impl From<&'static str> for Keys {
         } else {
             Query::Short(&v, v.chars().next().unwrap())
         };
-        Keys([k, Query::Empty])
+        Keys([Some(k), None])
     }
 }
