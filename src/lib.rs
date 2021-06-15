@@ -51,8 +51,6 @@ struct Arg<'a> {
     eq: Option<bool>,
     quotes: Option<char>,
     value: Option<&'a str>,
-    #[cfg(feature = "combined-flags")]
-    combined: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -161,17 +159,12 @@ impl<'a> TryFrom<&'a str> for Arg<'a> {
             }
         }
 
-        #[cfg(feature = "combined-flags")]
-        let combined = prefix == Prefix::SingleDash && name.len() > 1;
-
         Ok(Arg {
             prefix,
             name,
             eq,
             quotes,
             value,
-            #[cfg(feature = "combined-flags")]
-            combined,
         })
     }
 }
@@ -188,7 +181,7 @@ impl<'a> Arg<'a> {
             (Prefix::SingleDash, Prefix::SingleDash) => self.name == k.query,
             #[cfg(feature = "combined-flags")]
             (Prefix::SingleDash, Prefix::SingleDash) => {
-                if self.combined {
+                if self.name.len() > 1 {
                     self.name.contains(k.query)
                 } else {
                     self.name == k.query
