@@ -46,11 +46,14 @@ enum Prefix {
 
 #[derive(Clone, Debug)]
 struct Arg<'a> {
+    // represent `-` or `--`
     prefix: Prefix,
-    name: &'a str,
-    eq: Option<bool>,
-    quotes: Option<char>,
-    value: Option<&'a str>,
+    // the part right of the prefix
+    rest: &'a str,
+    // the full string
+    repr: &'a str,
+    // the index of the first non-ascii/alphabetic character
+    idx_non_alpha: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,103 +121,142 @@ impl<'a> TryFrom<&'a str> for Arg<'a> {
             return Err(Error::NotAnOption);
         }
 
-        // Starts by parsing it as flag, overwrite later if necessary
-        let mut prefix = Prefix::SingleDash;
-        let mut start_name_idx = 1;
+        let (prefix, rest) = if s.starts_with("--") {
+            (Prefix::DoubleDash, &s[2..])
+        } else {
+            (Prefix::SingleDash, &s[1..])
+        };
 
-        if s.starts_with("--") {
-            prefix = Prefix::DoubleDash;
-            start_name_idx = 2;
-        }
-
-        let mut eq = None;
-        let quotes = None;
-        let mut value = None;
-        let mut name = &s[start_name_idx..];
-
-        #[cfg(feature = "eq-separator")]
-        {
-            if let Some(eq_idx) = s.find('=') {
-                name = &s[start_name_idx..eq_idx];
-                eq = Some(true);
-                // worst case, it's the end of the string, it won't panic
-                let value_as_str = &s[eq_idx + 1..];
-                value = Some(value_as_str);
-
-                // Check for quoted value.
-                if let Some(c) = value_as_str.get(..1) {
-                    if c == "\"" || c == "'" {
-                        // A closing quote must be the same as an opening one.
-                        if value_as_str.len() > 1 && value_as_str.ends_with(c) {
-                            value = Some(&value_as_str[1..value_as_str.len() - 1]);
-                        } else {
-                            value = Some("");
-                        }
-                    }
-                }
-
-                if value == Some("") {
-                    value = None;
-                }
-            }
-        }
+        let idx_non_alpha = rest.find(|c: char| !c.is_ascii_alphabetic());
 
         Ok(Arg {
             prefix,
-            name,
-            eq,
-            quotes,
-            value,
+            rest,
+            repr: s,
+            idx_non_alpha,
         })
     }
 }
 
 impl<'a> Arg<'a> {
+    // Search for boolean flags
+    //
+    // KeyQuery `-v` will match Arg `-v` (and also `-vvv` or `-iv` if feature
+    // combined-flags is on).
+    // It will wrongly match a short-opt parameter, like -iverymuch, so it's up
+    // to the caller to first consume options with parameters before calling
+    // this function.
     fn contains(&self, k: &KeyQuery) -> bool {
-        // KeyQuery is guaranteed to be either --long-query or -s (short)
-        // It's up to the caller to split a combined-flags query into
-        // multiple calls to this method (e.g. -vvv as query is not allowed)
+        self.index_of(k).is_some()
+    }
 
-        match (self.prefix, k.prefix) {
-            (Prefix::DoubleDash, Prefix::DoubleDash) => self.name == k.query,
-            #[cfg(not(feature = "combined-flags"))]
-            (Prefix::SingleDash, Prefix::SingleDash) => self.name == k.query,
-            #[cfg(feature = "combined-flags")]
-            (Prefix::SingleDash, Prefix::SingleDash) => {
-                if self.name.len() > 1 {
-                    self.name.contains(k.query)
+    fn index_of(&self, k: &KeyQuery) -> Option<(usize, usize)> {
+        #[cfg(not(feature = "combined-flags"))]
+        let query = k.query;
+
+        #[cfg(feature = "combined-flags")]
+        let query = if k.prefix == Prefix::SingleDash {
+            &k.query[0..1]
+        } else {
+            k.query
+        };
+
+        let start_idx = match (self.prefix, k.prefix) {
+            (Prefix::DoubleDash, Prefix::DoubleDash) => {
+                if &self.rest[0..self.idx_non_alpha.unwrap_or(self.rest.len())] == query {
+                    Some(0)
                 } else {
-                    self.name == k.query
+                    None
                 }
             }
-            _ => false,
+            #[cfg(not(feature = "combined-flags"))]
+            (Prefix::SingleDash, Prefix::SingleDash) => {
+                if self.rest.starts_with(query) {
+                    Some(0)
+                } else {
+                    None
+                }
+            }
+            #[cfg(feature = "combined-flags")]
+            (Prefix::SingleDash, Prefix::SingleDash) => {
+                // stop at idx_non_alpha to avoid matching stuff like `-v` in `-abc=v`
+                self.rest[0..self.idx_non_alpha.unwrap_or(self.rest.len())].find(query)
+            }
+            _ => None,
+        };
+
+        start_idx.map(|s_idx| (s_idx, s_idx + k.query.len()))
+    }
+
+    #[cfg(all(not(feature = "eq-separator"), not(feature = "short-space-opt")))]
+    fn find_value_for(&self, k: &KeyQuery) -> Option<&str> {
+        None
+    }
+
+    #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
+    fn find_value_for(&self, k: &KeyQuery) -> Option<&'a str> {
+        // -w
+        // -w=10    // eq-separator
+        // -w='10'
+        // -w="10"
+        // -w10     // short-space-opt
+        // -w'10'
+        // -w"10"
+        // -w"=10"
+        // -iw      // combined-args
+        // -iw=10   // combined-args eq-separator
+        // -iw10    // combined-args short-space-opt
+        // ...      // similar to the first ones, but for combined-args
+        // --width  //follow same rules as not combined-args options
+        //
+        // -iw=foo  // should error out if eq-separator is off
+        // -iw=foo  // should not match -f
+        // -w'foo"  // non-matching quotes should error out
+
+        // First get the option bounds (if it's even there)
+        let (_, end_idx) = match self.index_of(k) {
+            Some(x) => x,
+            _ => return None,
+        };
+
+        if end_idx == self.rest.len() {
+            // no more text to search into
+            return None;
+        }
+
+        // Start by assigning everything (maybe is -w10, or -w=10, -w'10', ...)
+        let mut value = &self.rest[end_idx..];
+
+        // Do we accept `-w=10` but not `-w10`?
+        #[cfg(all(feature = "eq-separator", not(feature = "short-space-opt")))]
+        let mut value = match value.chars().next().unwrap() {
+            '=' if value.len() > 1 => &value[1..],
+            _ => return None,
+        };
+
+        // Check for quotes
+        if let Some(c) = value.get(..1) {
+            if c == "\"" || c == "'" {
+                // A closing quote must be the same as an opening one
+                if value.len() > 1 && value.ends_with(c) {
+                    value = &value[1..value.len() - 1];
+                } else {
+                    value = "";
+                }
+            }
+        }
+
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
         }
     }
 }
 
 impl<'a> Display for Arg<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut quote = "";
-        let quote_as_char: [u8; 1];
-        if let Some(q) = self.quotes {
-            // we decoded it from utf8 and it represents a single char, ascii
-            quote_as_char = [q as u8];
-            quote = std::str::from_utf8(&quote_as_char).unwrap();
-        }
-
-        write!(
-            f,
-            "{}{}{}{}{}{}",
-            match self.prefix {
-                Prefix::SingleDash => "-",
-                Prefix::DoubleDash => "--",
-            },
-            self.name,
-            if self.eq.is_none() { "" } else { "=" },
-            quote,
-            if let Some(v) = self.value { v } else { "" },
-            quote,
-        )
+        f.write_str(self.repr)
     }
 }
 
@@ -224,19 +266,19 @@ fn consume<'a, 'b>(
     k: &'b KeyQuery,
 ) -> (Option<Cow<'a, str>>, Option<Cow<'b, KeyQuery>>) {
     if arg.prefix == Prefix::SingleDash && k.prefix == Prefix::SingleDash {
-        // Combined flags. `k` could be "-vvv" and we have to create
+        // Combined flags. `k.repr` could be "-vvv" and we have to create
         // a new Arg without the removed occurrences.
 
         let k_char = k.query.chars().next().unwrap();
         let k_len = k.query.len();
-        let n = arg.name.matches(k_char).count();
-        let arg_fully_consumed = n == arg.name.len() && n <= k_len;
+        let n = arg.rest.matches(k_char).count();
+        let arg_fully_consumed = n == arg.rest.len() && n <= k_len;
         let query_fully_consumed = k_len <= n;
 
         return match (arg_fully_consumed, query_fully_consumed) {
             (true, true) => (None, None),
             (false, false) => (
-                Some(Cow::Owned(arg.name.replacen(k_char, "", k_len))),
+                Some(Cow::Owned(arg.repr.replacen(k_char, "", k_len))),
                 Some(Cow::Owned(
                     KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap(),
                 )),
@@ -247,14 +289,14 @@ fn consume<'a, 'b>(
                     KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap(),
                 )),
             ),
-            (false, true) => (Some(Cow::Owned(arg.name.replacen(k_char, "", k_len))), None),
+            (false, true) => (Some(Cow::Owned(arg.repr.replacen(k_char, "", k_len))), None),
         };
     }
 
     if arg.contains(k) {
         (None, None)
     } else {
-        (Some(Cow::Borrowed(arg.name)), Some(Cow::Borrowed(k)))
+        (Some(Cow::Borrowed(arg.repr)), Some(Cow::Borrowed(k)))
     }
 }
 
@@ -429,10 +471,10 @@ impl Arguments {
                     #[cfg(feature = "combined-flags")]
                     if arg.contains(&k) {
                         // consume as much `k` as possible from `arg`
-                        let (maybe_new_name, maybe_new_k) = consume(&arg, &k);
+                        let (maybe_new_arg_repr, maybe_new_k) = consume(&arg, &k);
 
-                        if let Some(new_name) = maybe_new_name {
-                            to_swap.push((idx, Some(new_name.into_owned())));
+                        if let Some(new_arg_repr) = maybe_new_arg_repr {
+                            to_swap.push((idx, Some(new_arg_repr.into_owned())));
                         } else {
                             to_swap.push((idx, None));
                         }
@@ -441,11 +483,10 @@ impl Arguments {
                             // We fully consumed the query (e.g. -k or -vvv)
                             // and we can apply the consumption
 
-                            for (swap_idx, maybe_new_name) in to_swap.into_iter().rev() {
-                                if let Some(new_name) = maybe_new_name {
-                                    let mut new_arg =
-                                        Arg::try_from(self.0[swap_idx].to_str().unwrap()).unwrap();
-                                    new_arg.name = &new_name;
+                            for (swap_idx, maybe_new_arg_repr) in to_swap.into_iter().rev() {
+                                if let Some(new_arg_repr) = maybe_new_arg_repr {
+                                    let s_ref: &str = new_arg_repr.as_ref();
+                                    let new_arg = Arg::try_from(s_ref).unwrap();
                                     self.0[swap_idx] = OsString::from(new_arg.to_string());
                                 } else {
                                     self.0.remove(swap_idx);
@@ -576,72 +617,14 @@ impl Arguments {
         } else if let Some((idx, key)) = self.index_of2(keys) {
             // Parse a `--key=value` or `-Kvalue` pair.
 
-            let value = &self.0[idx];
+            let arg = Arg::try_from(&self.0[idx])?;
+            let value = arg.find_value_for(key);
 
-            // Only UTF-8 strings are supported in this method.
-            let value = value.to_str().ok_or_else(|| Error::NonUtf8Argument)?;
-
-            let mut value_range = key.len()..value.len();
-
-            if value.as_bytes().get(value_range.start) == Some(&b'=') {
-                #[cfg(feature = "eq-separator")]
-                {
-                    value_range.start += 1;
-                }
-                #[cfg(not(feature = "eq-separator"))]
-                return Err(Error::OptionWithoutAValue(key));
+            if let Some(value) = value {
+                Ok(Some((value, PairKind::SingleArgument, idx)))
             } else {
-                // Key must be followed by `=` if not `short-space-opt`
-                #[cfg(not(feature = "short-space-opt"))]
-                return Err(Error::OptionWithoutAValue(key));
+                Err(Error::OptionWithoutAValue(key.repr))
             }
-
-            // Check for quoted value.
-            if let Some(c) = value.as_bytes().get(value_range.start).cloned() {
-                if c == b'"' || c == b'\'' {
-                    value_range.start += 1;
-
-                    // A closing quote must be the same as an opening one.
-                    if ends_with(&value[value_range.start..], c) {
-                        value_range.end -= 1;
-                    } else {
-                        return Err(Error::OptionWithoutAValue(key));
-                    }
-                }
-            }
-
-            // Check length, otherwise String::drain will panic.
-            if value_range.end - value_range.start == 0 {
-                return Err(Error::OptionWithoutAValue(key));
-            }
-
-            // Extract `value` from `--key="value"`.
-            let value = &value[value_range];
-
-            if value.is_empty() {
-                return Err(Error::OptionWithoutAValue(key));
-            }
-
-            Ok(Some((value, PairKind::SingleArgument, idx)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    // The whole logic must be type-independent to prevent monomorphization.
-    #[cfg(not(any(feature = "eq-separator", feature = "short-space-opt")))]
-    #[inline(never)]
-    fn find_value(&mut self, keys: &Keys) -> Result<Option<(&str, PairKind, usize)>, Error> {
-        if let Some((idx, key)) = self.index_of(keys) {
-            // Parse a `--key value` pair.
-
-            let value = match self.0.get(idx + 1) {
-                Some(v) => v,
-                None => return Err(Error::OptionWithoutAValue(key)),
-            };
-
-            let value = os_to_str(value)?;
-            Ok(Some((value, PairKind::TwoArguments, idx)))
         } else {
             Ok(None)
         }
@@ -807,18 +790,18 @@ impl Arguments {
 
     #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
     #[inline(never)]
-    fn index_of2(&self, keys: &Keys) -> Option<(usize, &'static str)> {
+    fn index_of2<'a>(&self, keys: &'a Keys) -> Option<(usize, &'a KeyQuery)> {
         // Loop unroll to save space.
 
         if let Some(first_key) = keys.first() {
             if let Some(i) = self.0.iter().position(|v| index_predicate(v, first_key)) {
-                return Some((i, first_key.repr));
+                return Some((i, first_key));
             }
         }
 
         if let Some(second_key) = keys.second() {
             if let Some(i) = self.0.iter().position(|v| index_predicate(v, second_key)) {
-                return Some((i, second_key.repr));
+                return Some((i, second_key));
             }
         }
 
