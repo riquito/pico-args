@@ -32,11 +32,13 @@ If you think that this library doesn't support some feature, it's probably inten
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Display};
 use std::str::FromStr;
+
+#[cfg(feature = "combined-flags")]
+use std::borrow::Cow;
 
 #[derive(PartialEq, Copy, Clone, Debug)]
 enum Prefix {
@@ -228,16 +230,21 @@ impl<'a> Arg<'a> {
             return None;
         }
 
-        // Start by assigning everything (maybe is -w10, or -w=10, -w'10', ...)
+        // Start by assigning everything (maybe is -w10, or --width=10, -w'10', ...)
         let mut value = &self.rest[end_idx..];
 
-        // Do we accept `-w=10` but not `-w10`?
-        #[cfg(all(feature = "eq-separator", not(feature = "short-space-opt")))]
-        let mut value = match value.chars().next().unwrap() {
-            '=' if value.len() > 1 => &value[1..],
-            _ => return None,
-        };
-
+        // Do we accept the value? Anything to drop? Think `--width=10` or `-w10`
+        #[cfg(feature = "eq-separator")]
+        {
+            value = match value.chars().next().unwrap() {
+                '=' if value.len() == 1 => return None,
+                '=' => &value[1..],
+                #[cfg(feature = "short-space-opt")]
+                _ => value,
+                #[cfg(not(feature = "short-space-opt"))]
+                _ => return None,
+            };
+        }
         // Check for quotes
         if let Some(c) = value.get(..1) {
             if c == "\"" || c == "'" {
