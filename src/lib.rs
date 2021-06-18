@@ -202,11 +202,6 @@ impl<'a> Arg<'a> {
         start_idx.map(|s_idx| (s_idx, s_idx + k.query.len()))
     }
 
-    #[cfg(all(not(feature = "eq-separator"), not(feature = "short-space-opt")))]
-    fn find_value_for(&self, k: &KeyQuery) -> Option<&str> {
-        None
-    }
-
     #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
     fn find_value_for(&self, k: &KeyQuery) -> Option<&'a str> {
         // -w
@@ -389,7 +384,6 @@ impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, PartialEq)]
 enum PairKind {
-    #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
     SingleArgument,
     TwoArguments,
 }
@@ -615,7 +609,6 @@ impl Arguments {
     }
 
     // The whole logic must be type-independent to prevent monomorphization.
-    #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
     #[inline(never)]
     fn find_value(&mut self, keys: &Keys) -> Result<Option<(&str, PairKind, usize)>, Error> {
         for key in keys.0.iter().filter_map(|k| k.as_ref()) {
@@ -633,16 +626,19 @@ impl Arguments {
 
                         let value = os_to_str(value)?;
                         return Ok(Some((value, PairKind::TwoArguments, idx)));
-                    } else if arg.contains(key) {
-                        // expect a `--key=value` or `-Kvalue` pair
+                    } else {
+                        #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
+                        if arg.contains(key) {
+                            // expect a `--key=value` or `-Kvalue` pair
 
-                        let value = arg.find_value_for(key);
+                            let value = arg.find_value_for(key);
 
-                        return if let Some(value) = value {
-                            Ok(Some((value, PairKind::SingleArgument, idx)))
-                        } else {
-                            Err(Error::OptionWithoutAValue(key.repr))
-                        };
+                            return if let Some(value) = value {
+                                Ok(Some((value, PairKind::SingleArgument, idx)))
+                            } else {
+                                Err(Error::OptionWithoutAValue(key.repr))
+                            };
+                        }
                     }
                 }
             }
