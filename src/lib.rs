@@ -127,7 +127,11 @@ impl<'a> TryFrom<&'a str> for Arg<'a> {
             (Prefix::SingleDash, &s[1..])
         };
 
-        let idx_non_alpha = rest.find(|c: char| !c.is_ascii_alphabetic());
+        let idx_non_alpha = if prefix == Prefix::SingleDash {
+            rest.find(|c: char| !c.is_ascii_alphabetic())
+        } else {
+            rest.find(|c: char| !c.is_ascii_alphanumeric())
+        };
 
         Ok(Arg {
             prefix,
