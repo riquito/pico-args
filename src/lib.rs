@@ -453,12 +453,7 @@ impl Arguments {
     #[inline(never)]
     fn contains_impl(&mut self, keys: &Keys) -> bool {
         // for each user's provided key to match
-        for k in keys.0.iter() {
-            if k.is_none() {
-                continue;
-            }
-            let k = k.as_ref().unwrap();
-
+        for k in keys.0.iter().filter_map(|k| k.as_ref()) {
             #[cfg(feature = "combined-flags")]
             let mut to_swap = Vec::new();
 
