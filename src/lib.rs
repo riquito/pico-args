@@ -248,6 +248,13 @@ impl<'a> Arg<'a> {
                 _ => return None,
             };
         }
+
+        // XXX is this behaviour correct? I'd expect to keep = and the rest as value
+        #[cfg(not(feature = "eq-separator"))]
+        if &value[0..1] == "=" {
+            return None;
+        }
+
         // Check for quotes
         if let Some(c) = value.get(..1) {
             if c == "\"" || c == "'" {
