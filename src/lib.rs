@@ -603,30 +603,37 @@ impl Arguments {
     #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
     #[inline(never)]
     fn find_value(&mut self, keys: &Keys) -> Result<Option<(&str, PairKind, usize)>, Error> {
-        if let Some((idx, key)) = self.index_of(keys) {
-            // Parse a `--key value` pair.
+        for key in keys.0.iter().filter_map(|k| k.as_ref()) {
+            // for each parameter provided (e.g. [--width=10, -v, --quiet])
+            for (idx, param_ostr) in self.0.iter().enumerate() {
+                // if we can parse it
+                if let Ok(arg) = Arg::try_from(param_ostr) {
+                    if arg.repr == key.repr {
+                        // expect a --key value pair
 
-            let value = match self.0.get(idx + 1) {
-                Some(v) => v,
-                None => return Err(Error::OptionWithoutAValue(key)),
-            };
+                        let value = match self.0.get(idx + 1) {
+                            Some(v) => v,
+                            None => return Err(Error::OptionWithoutAValue(key.repr)),
+                        };
 
-            let value = os_to_str(value)?;
-            Ok(Some((value, PairKind::TwoArguments, idx)))
-        } else if let Some((idx, key)) = self.index_of2(keys) {
-            // Parse a `--key=value` or `-Kvalue` pair.
+                        let value = os_to_str(value)?;
+                        return Ok(Some((value, PairKind::TwoArguments, idx)));
+                    } else if arg.contains(key) {
+                        // expect a `--key=value` or `-Kvalue` pair
 
-            let arg = Arg::try_from(&self.0[idx])?;
-            let value = arg.find_value_for(key);
+                        let value = arg.find_value_for(key);
 
-            if let Some(value) = value {
-                Ok(Some((value, PairKind::SingleArgument, idx)))
-            } else {
-                Err(Error::OptionWithoutAValue(key.repr))
+                        return if let Some(value) = value {
+                            Ok(Some((value, PairKind::SingleArgument, idx)))
+                        } else {
+                            Err(Error::OptionWithoutAValue(key.repr))
+                        };
+                    }
+                }
             }
-        } else {
-            Ok(None)
         }
+
+        Ok(None)
     }
 
     /// Parses multiple key-value pairs into the `Vec` using `FromStr` trait.
@@ -787,26 +794,6 @@ impl Arguments {
         None
     }
 
-    #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
-    #[inline(never)]
-    fn index_of2<'a>(&self, keys: &'a Keys) -> Option<(usize, &'a KeyQuery)> {
-        // Loop unroll to save space.
-
-        if let Some(first_key) = keys.first() {
-            if let Some(i) = self.0.iter().position(|v| index_predicate(v, first_key)) {
-                return Some((i, first_key));
-            }
-        }
-
-        if let Some(second_key) = keys.second() {
-            if let Some(i) = self.0.iter().position(|v| index_predicate(v, second_key)) {
-                return Some((i, second_key));
-            }
-        }
-
-        None
-    }
-
     /// Parses a free-standing argument using `FromStr` trait.
     ///
     /// This is a shorthand for `free_from_fn(FromStr::from_str)`
@@ -931,56 +918,6 @@ impl Arguments {
 #[inline(never)]
 fn error_to_string<E: Display>(e: E) -> String {
     e.to_string()
-}
-
-#[cfg(feature = "eq-separator")]
-#[inline(never)]
-fn starts_with_plus_eq(text: &OsStr, k: &KeyQuery) -> bool {
-    if let Some(s) = text.to_str() {
-        s.starts_with(k.repr) && s.get(k.repr.len()..k.repr.len() + 1) == Some("=")
-    } else {
-        false
-    }
-}
-
-#[cfg(feature = "short-space-opt")]
-#[inline(never)]
-fn starts_with_short_prefix(text: &OsStr, k: &KeyQuery) -> bool {
-    match k.prefix {
-        Prefix::SingleDash => {
-            if let Some(s) = text.to_str() {
-                return s.starts_with(k.repr);
-            }
-            false
-        }
-        _ => false,
-    }
-}
-
-#[cfg(all(feature = "eq-separator", feature = "short-space-opt"))]
-#[inline]
-fn index_predicate(text: &OsStr, prefix: &KeyQuery) -> bool {
-    starts_with_plus_eq(text, prefix) || starts_with_short_prefix(text, prefix)
-}
-#[cfg(all(feature = "eq-separator", not(feature = "short-space-opt")))]
-#[inline]
-fn index_predicate(text: &OsStr, prefix: &KeyQuery) -> bool {
-    starts_with_plus_eq(text, prefix)
-}
-#[cfg(all(feature = "short-space-opt", not(feature = "eq-separator")))]
-#[inline]
-fn index_predicate(text: &OsStr, prefix: &KeyQuery) -> bool {
-    starts_with_short_prefix(text, prefix)
-}
-
-#[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
-#[inline]
-fn ends_with(text: &str, c: u8) -> bool {
-    if text.is_empty() {
-        false
-    } else {
-        text.as_bytes()[text.len() - 1] == c
-    }
 }
 
 #[inline]
