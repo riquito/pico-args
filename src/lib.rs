@@ -167,6 +167,14 @@ impl<'a> Arg<'a> {
             k.query
         };
 
+        // XXX I disagree with this one. --width=10, with feature eq-separator off,
+        // is considered not present. I'd say that it has either value "=10"
+        // or is considered present wihout a value ( Error OptionWithoutAValue in find_value )
+        #[cfg(all(feature = "short-space-opt", not(feature = "eq-separator")))]
+        if k.prefix == Prefix::DoubleDash && self.rest.len() > query.len() {
+            return None;
+        }
+
         let start_idx = match (self.prefix, k.prefix) {
             (Prefix::DoubleDash, Prefix::DoubleDash) => {
                 if &self.rest[0..self.idx_non_alpha.unwrap_or(self.rest.len())] == query {
