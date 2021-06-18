@@ -187,7 +187,10 @@ fn eq_option_err_05() {
 fn eq_option_err_06() {
     let mut args = Arguments::from_vec(to_vec(&["-w-10"]));
     let value: Result<Option<u32>, Error> = args.opt_value_from_str("-w");
-    assert_eq!(value.unwrap(), None);
+    assert_eq!(
+        value.unwrap_err().to_string(),
+        "the '-w' option doesn't have an associated value"
+    );
 }
 
 #[cfg(feature = "eq-separator")]
