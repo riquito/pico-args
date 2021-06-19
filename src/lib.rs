@@ -469,7 +469,7 @@ impl Arguments {
     #[inline(never)]
     fn contains_impl(&mut self, keys: &Keys) -> bool {
         // for each user's provided key to match
-        for k in keys.0.iter().filter_map(|k| k.as_ref()) {
+        for k in keys.iter_some() {
             #[cfg(feature = "combined-flags")]
             let mut to_swap = Vec::new();
 
@@ -618,7 +618,7 @@ impl Arguments {
     // The whole logic must be type-independent to prevent monomorphization.
     #[inline(never)]
     fn find_value(&mut self, keys: &Keys) -> Result<Option<(&str, PairKind, usize)>, Error> {
-        for key in keys.0.iter().filter_map(|k| k.as_ref()) {
+        for key in keys.iter_some() {
             // for each parameter provided (e.g. [--width=10, -v, --quiet])
             for (idx, param_ostr) in self.0.iter().enumerate() {
                 // if we can parse it
@@ -959,6 +959,11 @@ impl Keys {
     #[inline]
     fn second(&self) -> Option<&KeyQuery> {
         self.0[1].as_ref()
+    }
+
+    #[inline]
+    fn iter_some(&self) -> impl Iterator<Item = &KeyQuery> {
+        self.0.iter().filter_map(|k| k.as_ref())
     }
 }
 
