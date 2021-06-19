@@ -621,20 +621,20 @@ impl Arguments {
         for key in keys.iter_some() {
             // for each parameter provided (e.g. [--width=10, -v, --quiet])
             for (idx, param_ostr) in self.0.iter().enumerate() {
-                // if we can parse it
-                if let Ok(arg) = Arg::try_from(param_ostr) {
-                    if arg.repr == key.repr {
-                        // expect a --key value pair
+                if param_ostr == key.repr {
+                    // expect a --key value pair
 
-                        let value = match self.0.get(idx + 1) {
-                            Some(v) => v,
-                            None => return Err(Error::OptionWithoutAValue(key.repr)),
-                        };
+                    let value = match self.0.get(idx + 1) {
+                        Some(v) => v,
+                        None => return Err(Error::OptionWithoutAValue(key.repr)),
+                    };
 
-                        let value = os_to_str(value)?;
-                        return Ok(Some((value, PairKind::TwoArguments, idx)));
-                    } else {
-                        #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
+                    let value = os_to_str(value)?;
+                    return Ok(Some((value, PairKind::TwoArguments, idx)));
+                } else {
+                    #[cfg(any(feature = "eq-separator", feature = "short-space-opt"))]
+                    // if we can parse it
+                    if let Ok(arg) = Arg::try_from(param_ostr) {
                         if arg.contains(key) {
                             // expect a `--key=value` or `-Kvalue` pair
 
