@@ -487,17 +487,16 @@ impl Arguments {
                         // consume as much `k` as possible from `arg`
                         let (maybe_new_arg_repr, maybe_new_k) = consume(&arg, &k);
 
-                        if let Some(new_arg_repr) = maybe_new_arg_repr {
-                            to_swap.push((idx, Some(new_arg_repr)));
+                        if maybe_new_k.is_some() {
+                            to_swap.push((idx, maybe_new_arg_repr));
                         } else {
-                            to_swap.push((idx, None));
-                        }
-
-                        if maybe_new_k.is_none() {
                             // We fully consumed the query (e.g. -k or -vvv)
                             // and we can apply the consumption
 
-                            for (swap_idx, maybe_new_arg_repr) in to_swap.into_iter().rev() {
+                            for (swap_idx, maybe_new_arg_repr) in
+                                std::iter::once((idx, maybe_new_arg_repr))
+                                    .chain(to_swap.into_iter().rev())
+                            {
                                 if let Some(new_arg_repr) = maybe_new_arg_repr {
                                     self.0[swap_idx] = OsString::from(new_arg_repr);
                                 } else {
