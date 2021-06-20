@@ -749,7 +749,7 @@ impl Arguments {
 
             let value = match self.0.get(idx + 1) {
                 Some(v) => v,
-                None => return Err(Error::OptionWithoutAValue(key)),
+                None => return Err(Error::OptionWithoutAValue(key.repr)),
             };
 
             match f(value) {
@@ -797,15 +797,13 @@ impl Arguments {
     }
 
     #[inline(never)]
-    fn index_of(&self, keys: &Keys) -> Option<(usize, &'static str)> {
+    fn index_of<'a>(&self, keys: &'a Keys) -> Option<(usize, &'a KeyQuery)> {
         // Do not unroll loop to save space, because it creates a bigger file.
         // Which is strange, since `index_of2` actually benefits from it.
 
-        for maybe_key in &keys.0 {
-            if let Some(key) = maybe_key {
-                if let Some(i) = self.0.iter().position(|v| v == key.repr) {
-                    return Some((i, key.repr));
-                }
+        for key in keys.iter_some() {
+            if let Some(i) = self.0.iter().position(|v| v == key.repr) {
+                return Some((i, key));
             }
         }
 
