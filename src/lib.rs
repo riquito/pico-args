@@ -37,9 +37,6 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Display};
 use std::str::FromStr;
 
-#[cfg(feature = "combined-flags")]
-use std::borrow::Cow;
-
 #[derive(PartialEq, Copy, Clone, Debug)]
 enum Prefix {
     SingleDash,
@@ -281,11 +278,21 @@ impl<'a> Display for Arg<'a> {
     }
 }
 
+// Consume key k from inside arg.
+// It's expected to be called only on args for which arg.contains(k) is true,
+// otherwise it always fallbacks on (None, None) (fully consumed).
+// It returns a pair (Option<String, Option<KeyQuery>).
+// None means that that part of the pair has been fully consumed, otherwise
+// the updated part is returned
+//
+// # Examples
+//
+// ```rust
+// assert_eq!(consume(Arg::from("-vz"), KeyQuery::from("-vvv")),
+// (Some(String::from("-z")), Some(KeyQuery::from("-vv"))))
+// ```
 #[cfg(feature = "combined-flags")]
-fn consume<'a, 'b>(
-    arg: &'a Arg<'a>,
-    k: &'b KeyQuery,
-) -> (Option<Cow<'a, str>>, Option<Cow<'b, KeyQuery>>) {
+fn consume(arg: &Arg, k: &KeyQuery) -> (Option<String>, Option<KeyQuery>) {
     if arg.prefix == Prefix::SingleDash && k.prefix == Prefix::SingleDash {
         // Combined flags. `k.repr` could be "-vvv" and we have to create
         // a new Arg without the removed occurrences.
@@ -299,26 +306,18 @@ fn consume<'a, 'b>(
         return match (arg_fully_consumed, query_fully_consumed) {
             (true, true) => (None, None),
             (false, false) => (
-                Some(Cow::Owned(arg.repr.replacen(k_char, "", k_len))),
-                Some(Cow::Owned(
-                    KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap(),
-                )),
+                Some(arg.repr.replacen(k_char, "", k_len)),
+                Some(KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap()),
             ),
             (true, false) => (
                 None,
-                Some(Cow::Owned(
-                    KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap(),
-                )),
+                Some(KeyQuery::try_from(&k.repr[..k.repr.len() - n]).unwrap()),
             ),
-            (false, true) => (Some(Cow::Owned(arg.repr.replacen(k_char, "", k_len))), None),
+            (false, true) => (Some(arg.repr.replacen(k_char, "", k_len)), None),
         };
     }
 
-    if arg.contains(k) {
-        (None, None)
-    } else {
-        (Some(Cow::Borrowed(arg.repr)), Some(Cow::Borrowed(k)))
-    }
+    (None, None)
 }
 
 /// A list of possible errors.
@@ -489,7 +488,7 @@ impl Arguments {
                         let (maybe_new_arg_repr, maybe_new_k) = consume(&arg, &k);
 
                         if let Some(new_arg_repr) = maybe_new_arg_repr {
-                            to_swap.push((idx, Some(new_arg_repr.into_owned())));
+                            to_swap.push((idx, Some(new_arg_repr)));
                         } else {
                             to_swap.push((idx, None));
                         }
@@ -500,9 +499,7 @@ impl Arguments {
 
                             for (swap_idx, maybe_new_arg_repr) in to_swap.into_iter().rev() {
                                 if let Some(new_arg_repr) = maybe_new_arg_repr {
-                                    let s_ref: &str = new_arg_repr.as_ref();
-                                    let new_arg = Arg::try_from(s_ref).unwrap();
-                                    self.0[swap_idx] = OsString::from(new_arg.to_string());
+                                    self.0[swap_idx] = OsString::from(new_arg_repr);
                                 } else {
                                     self.0.remove(swap_idx);
                                 }
