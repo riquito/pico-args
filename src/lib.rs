@@ -84,8 +84,6 @@ impl TryFrom<&'static str> for KeyQuery {
         } else {
             #[cfg(feature = "combined-flags")]
             {
-                // XXX Check must be the same character repeated
-                // or `consume` will fail in weird ways
                 if s.starts_with('-') && s.len() > 2 {
                     return Ok(KeyQuery {
                         prefix: Prefix::SingleDash,
